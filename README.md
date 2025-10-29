@@ -1,418 +1,314 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
-# Complete OpenLane & SKY130 PDK Workflow - Bash Commands
-# RTL to GDSII for Systolic MAC Array
-# ============================================================================
-
-# ============================================================================
-# STEP 1: INSTALLATION & SETUP
+# openlane_run.sh
+# Nicely formatted RTL -> GDSII OpenLane workflow driver for Systolic MAC Array
+# Usage: ./openlane_run.sh [--design NAME] [--tag TAG] [--force] [--dry-run]
+# Example: ./openlane_run.sh --design systolic_mac_array --tag run1
 # ============================================================================
 
-echo "=== Step 1: Installing OpenLane ==="
+set -o errexit
+set -o pipefail
+set -o nounset
 
-# Clone OpenLane repository
-cd $HOME
-git clone https://github.com/The-OpenROAD-Project/OpenLane.git
-cd OpenLane
+# -------------------------
+# CONFIGURABLE VARIABLES
+# -------------------------
+OPENLANE_REPO="${HOME}/OpenLane"
+DESIGNS_DIR="${OPENLANE_REPO}/designs"
+DEFAULT_DESIGN="systolic_mac_array"
+DEFAULT_TAG="run1"
+PDK_REL_PATH="pdks/sky130A" # relative to OpenLane root (used for hints)
+YOSYS_SCRIPT="../synth.ys"   # relative to design/src when running inside container
+LOGDIR="${HOME}/openlane_runs"  # host-side archive of run logs/results
 
-# Build Docker image and install dependencies (downloads PDKs automatically)
-make
+# -------------------------
+# CLI / ARGS
+# -------------------------
+DESIGN="${DEFAULT_DESIGN}"
+TAG="${DEFAULT_TAG}"
+FORCE=false
+DRY_RUN=false
 
-# Verify installation
-make test
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --design) DESIGN="$2"; shift 2;;
+    --tag) TAG="$2"; shift 2;;
+    --force) FORCE=true; shift;;
+    --dry-run) DRY_RUN=true; shift;;
+    -h|--help) 
+      cat <<EOF
+Usage: $0 [--design NAME] [--tag TAG] [--force] [--dry-run]
+  --design   Name of design folder under OpenLane/designs (default: ${DEFAULT_DESIGN})
+  --tag      Run tag used by flow.tcl (default: ${DEFAULT_TAG})
+  --force    Re-clone OpenLane if missing / overwrite some checks (use with care)
+  --dry-run  Echo steps but don't execute heavy commands
+EOF
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1;;
+  esac
+done
 
-# Expected output: All tests should pass
-# [IMAGE PLACEHOLDER: OpenLane installation success]
+# -------------------------
+# COLORS (optional)
+# -------------------------
+if [[ -t 1 ]]; then
+  RED="$(printf '\033[1;31m')"
+  GREEN="$(printf '\033[1;32m')"
+  YELLOW="$(printf '\033[1;33m')"
+  BLUE="$(printf '\033[1;34m')"
+  BOLD="$(printf '\033[1;1m')"
+  RESET="$(printf '\033[0m')"
+else
+  RED='' GREEN='' YELLOW='' BLUE='' BOLD='' RESET=''
+fi
 
-# ============================================================================
-# STEP 2: CREATE DESIGN DIRECTORY STRUCTURE
-# ============================================================================
+# -------------------------
+# HELPERS
+# -------------------------
+logfile="${LOGDIR}/${DESIGN}_${TAG}_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p "$(dirname "${logfile}")"
 
-echo "=== Step 2: Setting up Design Structure ==="
+step() {
+  local title="$1"
+  echo
+  echo -e "${BOLD}${BLUE}===> ${title}${RESET}"
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] STEP: ${title}" | tee -a "${logfile}"
+}
 
-# Navigate to designs directory
-cd $HOME/OpenLane/designs
+run() {
+  # run a command, echo it to stdout & logfile; if dry-run, only echo
+  echo -e "${YELLOW}+ $*${RESET}"
+  echo "+ $*" >> "${logfile}"
+  if ! $DRY_RUN; then
+    eval "$@" 2>&1 | tee -a "${logfile}"
+  fi
+}
 
-# Create design folder structure
-mkdir -p systolic_mac_array/src
-mkdir -p systolic_mac_array/constraints
-mkdir -p systolic_mac_array/results
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "${cmd}" &>/dev/null; then
+    echo -e "${RED}Error: required command '${cmd}' not found in PATH.${RESET}"
+    echo "Please install it or run this script from a system with ${cmd} available."
+    exit 2
+  fi
+}
 
-cd systolic_mac_array
+# -------------------------
+# SANITY CHECKS (host)
+# -------------------------
+step "Sanity checks and environment"
+echo "Design: ${DESIGN}, Tag: ${TAG}, Dry-run: ${DRY_RUN}, Force: ${FORCE}"
+echo "Logfile: ${logfile}"
 
-# Verify directory structure
-tree .
-# Expected output:
-# .
-# ├── src/
-# ├── constraints/
-# └── results/
+# Check required host tools for local steps (not everything is required inside container)
+for c in git docker; do
+  if ! command -v "${c}" &>/dev/null; then
+    echo -e "${YELLOW}Warning: '${c}' not found. Some steps may fail or require you to run inside container.${RESET}"
+  fi
+done
 
-# [IMAGE PLACEHOLDER: Directory structure tree view]
+# -------------------------
+# STEP 1: Clone OpenLane (if needed)
+# -------------------------
+step "Step 1: Install / prepare OpenLane"
 
-# ============================================================================
-# STEP 3: COPY/CREATE RTL FILES
-# ============================================================================
+if [[ ! -d "${OPENLANE_REPO}" || "${FORCE}" == "true" ]]; then
+  if [[ -d "${OPENLANE_REPO}" && "${FORCE}" == "true" ]]; then
+    echo -e "${YELLOW}Forcing re-clone of OpenLane (removing existing).${RESET}"
+    run "rm -rf \"${OPENLANE_REPO}\""
+  fi
+  run "git clone https://github.com/The-OpenROAD-Project/OpenLane.git \"${OPENLANE_REPO}\""
+  cd "${OPENLANE_REPO}"
+  echo -e "${GREEN}Building OpenLane (this downloads and builds PDKs). This may take a while.${RESET}"
+  run "make"
+  run "make test || echo 'make test returned non-zero; check ${OPENLANE_REPO}/test results.'"
+else
+  echo "OpenLane already exists at ${OPENLANE_REPO}"
+fi
 
-echo "=== Step 3: Creating RTL Design Files ==="
+# -------------------------
+# STEP 2: Create design folder structure
+# -------------------------
+step "Step 2: Create design structure under OpenLane/designs"
 
-# NOTE: You should have already created:
-# - src/mac_pe.v
-# - src/systolic_top.v
-# - src/tb_systolic.v
-# (Use the code provided in the document)
+DESIGN_DIR="${DESIGNS_DIR}/${DESIGN}"
+SRC_DIR="${DESIGN_DIR}/src"
+CONSTRAINTS_DIR="${DESIGN_DIR}/constraints"
+RESULTS_DIR="${DESIGN_DIR}/results"
 
-# Verify RTL files exist
-ls -la src/
-# Expected output:
-# mac_pe.v
-# systolic_top.v
-# tb_systolic.v
+if [[ ! -d "${DESIGN_DIR}" ]]; then
+  run "mkdir -p \"${SRC_DIR}\" \"${CONSTRAINTS_DIR}\" \"${RESULTS_DIR}\""
+  echo -e "${GREEN}Created design skeleton: ${DESIGN_DIR}${RESET}"
+else
+  echo "Design folder already exists: ${DESIGN_DIR}"
+fi
 
-# [IMAGE PLACEHOLDER: List of RTL files]
+# List expected RTL files to help user confirm
+echo "Expected RTL files (place them into ${SRC_DIR}):"
+echo "  - mac_pe.v"
+echo "  - systolic_top.v"
+echo "  - tb_systolic.v"
+ls -la "${SRC_DIR}" || true
 
-# ============================================================================
-# STEP 4: RUN SYNTHESIS WITH YOSYS (STANDALONE)
-# ============================================================================
+# -------------------------
+# STEP 3: Confirm RTL files exist
+# -------------------------
+step "Step 3: Verify RTL files are present"
+missing=()
+for f in mac_pe.v systolic_top.v tb_systolic.v; do
+  if [[ ! -f "${SRC_DIR}/${f}" ]]; then
+    missing+=("${f}")
+  fi
+done
 
-echo "=== Step 4: Running Yosys Synthesis ==="
+if (( ${#missing[@]} > 0 )); then
+  echo -e "${RED}Missing RTL files in ${SRC_DIR}:${RESET} ${missing[*]}"
+  echo "Please copy your RTL into the src/ folder before continuing."
+  if $DRY_RUN; then
+    echo "Dry-run: continuing anyway."
+  else
+    exit 3
+  fi
+else
+  echo -e "${GREEN}All required RTL files found.${RESET}"
+fi
 
-# Enter OpenLane container
-cd $HOME/OpenLane
-make mount
+# -------------------------
+# STEP 4: Run Yosys synthesis (inside container recommended)
+# -------------------------
+step "Step 4: Run Yosys synthesis (recommended inside OpenLane container)"
 
-# Inside the container, navigate to your design
-cd /openlane/designs/systolic_mac_array/src
+echo "We will launch 'make mount' to open a shell inside the OpenLane container and run synthesis."
+if $DRY_RUN; then
+  echo "Dry-run: would run OpenLane container and then run yosys -s ${YOSYS_SCRIPT} inside ${DESIGN_DIR}/src"
+else
+  run "cd \"${OPENLANE_REPO}\" && make mount"  # opens interactive container shell in interactive use
+  echo -e "${BLUE}Now inside container shell. Run the following inside the container:${RESET}"
+  cat <<EOF
+cd /openlane/designs/${DESIGN}/src
+# Option A: run provided script (if you put synth.ys next to src/)
+yosys -s ${YOSYS_SCRIPT}
 
-# Run Yosys synthesis with the script
-yosys -s ../synth.ys
+# Option B: run interactive Yosys session (if you want to paste your commands)
+yosys
+# then run:
+# read_liberty -lib /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+# read_verilog mac_pe.v
+# read_verilog systolic_top.v
+# hierarchy -top systolic_top
+# synth -top systolic_top
+# dfflibmap -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+# abc -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+# clean
+# write_verilog -noattr synth_netlist.v
+# stat -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+EOF
+  echo -e "${YELLOW}After running yosys, ensure synth_netlist.v was generated in ${SRC_DIR}${RESET}"
+fi
 
-# Alternative: Interactive Yosys session
-yosys <<EOF
-read_liberty -lib /openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-read_verilog mac_pe.v
-read_verilog systolic_top.v
-hierarchy -top systolic_top
-synth -top systolic_top
-dfflibmap -liberty /openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-abc -liberty /openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-clean
-write_verilog -noattr synth_netlist.v
-stat -liberty /openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-tee -o synth_stats.txt stat
+# -------------------------
+# STEP 5: Post-synthesis functional simulation (host or container)
+# -------------------------
+step "Step 5: Run post-synthesis functional simulation"
+
+if $DRY_RUN; then
+  echo "Dry-run: would invoke iverilog with synth_netlist.v and PDK verilog models."
+else
+  # Compose PDK verilog locations (inside container these paths differ)
+  PDK_V_PRIM="${OPENLANE_REPO}/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/verilog/primitives.v"
+  PDK_V_ALL="${OPENLANE_REPO}/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/verilog/sky130_fd_sc_hd.v"
+
+  # If running inside container, these paths are /openlane/..., user must adapt if needed.
+  if [[ -f "${SRC_DIR}/synth_netlist.v" ]]; then
+    run "iverilog -g2012 -o \"${SRC_DIR}/tb_netlist.vvp\" \
+      \"${SRC_DIR}/tb_systolic.v\" \
+      \"${SRC_DIR}/synth_netlist.v\" \
+      \"${PDK_V_PRIM}\" \
+      \"${PDK_V_ALL}\"" || echo "iverilog compile returned non-zero (check paths and files)."
+    if [[ -f "${SRC_DIR}/tb_netlist.vvp" ]]; then
+      run "vvp \"${SRC_DIR}/tb_netlist.vvp\""
+      echo -e "${GREEN}Post-synthesis simulation completed (check waveform/synth logs).${RESET}"
+    else
+      echo -e "${RED}tb_netlist.vvp not created. Skipping simulation run.${RESET}"
+    fi
+  else
+    echo -e "${RED}synth_netlist.v not found in ${SRC_DIR}. Run synthesis first.${RESET}"
+  fi
+fi
+
+# -------------------------
+# STEP 6: Run full OpenLane flow (RTL->GDSII)
+# -------------------------
+step "Step 6: Run full OpenLane flow (RTL -> GDSII)"
+
+RUN_CMD="./flow.tcl -design ${DESIGN} -tag ${TAG} -overwrite"
+if $DRY_RUN; then
+  echo "Dry-run: would execute: ${RUN_CMD} inside ${OPENLANE_REPO}"
+else
+  echo "Starting OpenLane flow. This runs inside the OpenLane container (make mount)."
+  echo "If you are already inside the container run these commands:"
+  echo "  cd /openlane"
+  echo "  ${RUN_CMD}"
+  echo
+  echo "Or run from host to open a container and start interactive session:"
+  echo "  cd \"${OPENLANE_REPO}\" && make mount"
+  echo
+  echo -e "${YELLOW}Note: OpenLane will write results to ${DESIGN_DIR}/runs/${TAG}/results${RESET}"
+fi
+
+# -------------------------
+# STEP 7: Running individual flow stages (examples)
+# -------------------------
+step "Step 7: Running individual flow stages (examples)"
+
+cat <<'EOF'
+# Examples (run inside container /openlane):
+# Synthesis only:
+#   ./flow.tcl -design DESIGN -tag TAG -from synthesis -to synthesis
+# Floorplan only:
+#   ./flow.tcl -design DESIGN -tag TAG -from floorplan -to floorplan
+# Placement only:
+#   ./flow.tcl -design DESIGN -tag TAG -from placement -to placement
+# CTS:
+#   ./flow.tcl -design DESIGN -tag TAG -from cts -to cts
+# Routing:
+#   ./flow.tcl -design DESIGN -tag TAG -from routing -to routing
 EOF
 
-# Check synthesis output
-ls -lh synth_netlist.v
-
-# View synthesis statistics
-cat synth_stats.txt
-
-# [IMAGE PLACEHOLDER: Yosys synthesis statistics output]
-
-# ============================================================================
-# STEP 5: POST-SYNTHESIS FUNCTIONAL SIMULATION
-# ============================================================================
-
-echo "=== Step 5: Post-Synthesis Simulation ==="
-
-# Locate standard cell Verilog models
-PDK_VERILOG="/openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/verilog/primitives.v"
-PDK_VERILOG2="/openlane/pdks/sky130A/libs.ref/sky130_fd_sc_hd/verilog/sky130_fd_sc_hd.v"
-
-# Compile with iverilog (Icarus Verilog)
-iverilog -g2012 -o tb_netlist.vvp \
-  tb_systolic.v \
-  synth_netlist.v \
-  $PDK_VERILOG \
-  $PDK_VERILOG2
-
-# Run simulation
-vvp tb_netlist.vvp
-
-# View waveforms (if GTKWave is available)
-gtkwave systolic_tb.vcd &
-
-# [IMAGE PLACEHOLDER: GTKWave waveform viewer screenshot]
-
-# Alternative: Using Verilator for faster simulation
-verilator --cc --exe --build -j 0 \
-  --top-module systolic_top \
-  systolic_top.v mac_pe.v tb_systolic.cpp
-
-./obj_dir/Vsystolic_top
-
-# [IMAGE PLACEHOLDER: Simulation output results]
-
-# ============================================================================
-# STEP 6: RUN COMPLETE OPENLANE FLOW (RTL → GDSII)
-# ============================================================================
-
-echo "=== Step 6: Running Full OpenLane Flow ==="
-
-# Enter OpenLane container (if not already inside)
-cd $HOME/OpenLane
-make mount
-
-# Inside container, run OpenLane flow
-cd /openlane
-
-# Run complete RTL to GDSII flow
-./flow.tcl -design systolic_mac_array -tag run1 -overwrite
-
-# Alternative: Run with custom config
-./flow.tcl -design systolic_mac_array \
-  -tag run1 \
-  -overwrite \
-  -config_file /openlane/designs/systolic_mac_array/config.json
-
-# Monitor flow progress
-tail -f /openlane/designs/systolic_mac_array/runs/run1/logs/flow_summary.log
-
-# [IMAGE PLACEHOLDER: OpenLane flow execution progress]
-
-# ============================================================================
-# STEP 7: RUN SPECIFIC FLOW STAGES
-# ============================================================================
-
-echo "=== Step 7: Running Individual Stages ==="
-
-# Synthesis only
-./flow.tcl -design systolic_mac_array -tag run2 -from synthesis -to synthesis
-
-# Floorplan only
-./flow.tcl -design systolic_mac_array -tag run2 -from floorplan -to floorplan
-
-# Placement only
-./flow.tcl -design systolic_mac_array -tag run2 -from placement -to placement
-
-# Clock Tree Synthesis (CTS)
-./flow.tcl -design systolic_mac_array -tag run2 -from cts -to cts
-
-# Routing
-./flow.tcl -design systolic_mac_array -tag run2 -from routing -to routing
-
-# Complete flow from synthesis to routing
-./flow.tcl -design systolic_mac_array -tag run2 -from synthesis -to routing
-
-# [IMAGE PLACEHOLDER: Individual stage completion logs]
-
-# ============================================================================
-# STEP 8: CHECK RESULTS
-# ============================================================================
-
-echo "=== Step 8: Analyzing Results ==="
-
-# Navigate to results directory
-cd /openlane/designs/systolic_mac_array/runs/run1/results
-
-# List all result files
-ls -lR
-
-# Check final GDSII
-ls -lh final/gds/systolic_top.gds
-
-# Check final netlist
-ls -lh final/verilog/gl/systolic_top.v
-
-# Check final DEF
-ls -lh final/def/systolic_top.def
-
-# Check final LEF
-ls -lh final/lef/systolic_top.lef
-
-# [IMAGE PLACEHOLDER: Results directory listing]
-
-# ============================================================================
-# STEP 9: VIEW LAYOUT WITH KLAYOUT
-# ============================================================================
-
-echo "=== Step 9: Viewing GDSII Layout ==="
-
-# Open GDSII with KLayout (requires X11 forwarding or local installation)
-klayout /openlane/designs/systolic_mac_array/runs/run1/results/final/gds/systolic_top.gds
-
-# Alternative: Magic VLSI viewer
-magic -T /openlane/pdks/sky130A/libs.tech/magic/sky130A.tech \
-  /openlane/designs/systolic_mac_array/runs/run1/results/final/gds/systolic_top.gds
-
-# [IMAGE PLACEHOLDER: KLayout GDSII viewer showing layout]
-
-# ============================================================================
-# STEP 10: CHECK REPORTS
-# ============================================================================
-
-echo "=== Step 10: Reviewing Reports ==="
-
-cd /openlane/designs/systolic_mac_array/runs/run1/reports
-
-# View synthesis report
-cat synthesis/1-synthesis.stat.rpt.strategy0
-
-# View area report
-cat final_summary_report.csv
-
-# View timing report
-cat signoff/sta-rcx_nom/multi_corner_sta.checks.rpt
-
-# View power report
-cat signoff/sta-rcx_nom/multi_corner_sta.power.rpt
-
-# View DRC report
-cat signoff/drc/drc.rpt
-
-# View LVS report
-cat signoff/lvs/lvs.rpt
-
-# [IMAGE PLACEHOLDER: Timing report excerpt]
-# [IMAGE PLACEHOLDER: Power report excerpt]
-
-# Generate summary
-cat /openlane/designs/systolic_mac_array/runs/run1/reports/final_summary_report.csv
-
-# ============================================================================
-# STEP 11: EXTRACT KEY METRICS
-# ============================================================================
-
-echo "=== Step 11: Extracting Key Metrics ==="
-
-# Extract timing slack
-grep -A 5 "worst slack" \
-  /openlane/designs/systolic_mac_array/runs/run1/reports/signoff/sta-rcx_nom/multi_corner_sta.checks.rpt
-
-# Extract total cell area
-grep "Chip area" \
-  /openlane/designs/systolic_mac_array/runs/run1/reports/synthesis/1-synthesis.stat.rpt.strategy0
-
-# Extract cell count
-grep "Number of cells" \
-  /openlane/designs/systolic_mac_array/runs/run1/reports/synthesis/1-synthesis.stat.rpt.strategy0
-
-# Extract wire length
-grep "Total wire length" \
-  /openlane/designs/systolic_mac_array/runs/run1/reports/routing/detailed_routing.drc
-
-# Extract power consumption
-grep "Total Power" \
-  /openlane/designs/systolic_mac_array/runs/run1/reports/signoff/sta-rcx_nom/multi_corner_sta.power.rpt
-
-# [IMAGE PLACEHOLDER: Summary metrics table]
-
-# ============================================================================
-# STEP 12: RUN DRC/LVS VERIFICATION
-# ============================================================================
-
-echo "=== Step 12: Running DRC/LVS Checks ==="
-
-# DRC check with Magic
-cd /openlane/designs/systolic_mac_array/runs/run1/results/final/gds
-
-magic -T /openlane/pdks/sky130A/libs.tech/magic/sky130A.tech \
-  -noconsole -dnull <<EOF
-gds read systolic_top.gds
-load systolic_top
-select top cell
-expand
-drc check
-drc catchup
-drc count
-drc why
-quit -noprompt
+# -------------------------
+# STEP 8: Collect and archive results (host)
+# -------------------------
+step "Step 8: Archive results and extract key artifacts (host)"
+
+if $DRY_RUN; then
+  echo "Dry-run: would copy results from ${DESIGN_DIR}/runs/${TAG}/results to ${HOME}/systolic_array_results and create tarball."
+else
+  SRC_RESULTS="${DESIGN_DIR}/runs/${TAG}/results"
+  if [[ -d "${SRC_RESULTS}" ]]; then
+    DEST="${HOME}/systolic_array_results/${DESIGN}_${TAG}"
+    run "mkdir -p \"${DEST}\""
+    run "cp -v \"${SRC_RESULTS}/final/gds/${DESIGN}.gds\" \"${DEST}/\" || true"
+    run "cp -v \"${SRC_RESULTS}/final/verilog/gl/${DESIGN}.v\" \"${DEST}/\" || true"
+    run "cp -v \"${SRC_RESULTS}/reports/final_summary_report.csv\" \"${DEST}/\" || true"
+    run "cp -rv \"${SRC_RESULTS}/logs\" \"${DEST}/\" || true"
+    run "tar -C \"${HOME}/systolic_array_results\" -czf \"${DEST}.tar.gz\" \"${DESIGN}_${TAG}\" || true"
+    echo -e "${GREEN}Archived results to ${DEST}.tar.gz${RESET}"
+  else
+    echo -e "${YELLOW}Results directory not found: ${SRC_RESULTS}. Run OpenLane flow first.${RESET}"
+  fi
+fi
+
+# -------------------------
+# STEP 9: Helpful reminders & debug commands
+# -------------------------
+step "Step 9: Helpful tips & debug commands"
+
+cat <<EOF
+- To view the GDS locally use: klayout /path/to/final/gds/<design>.gds
+- To tail the OpenLane logs: tail -f ${DESIGN_DIR}/runs/${TAG}/logs/openlane.log
+- To check warnings/errors: grep -i "error" ${DESIGN_DIR}/runs/${TAG}/logs/openlane.log
+- To run DRC/LVS use magic/netgen inside the container (see OpenLane docs)
 EOF
 
-# LVS check with Netgen
-netgen -batch lvs \
-  "/openlane/designs/systolic_mac_array/runs/run1/results/final/verilog/gl/systolic_top.v systolic_top" \
-  "/openlane/designs/systolic_mac_array/runs/run1/results/final/gds/systolic_top.gds systolic_top" \
-  /openlane/pdks/sky130A/libs.tech/netgen/sky130A_setup.tcl \
-  systolic_top_lvs.out
-
-# Check LVS results
-cat systolic_top_lvs.out | grep -A 10 "Circuit"
-
-# [IMAGE PLACEHOLDER: DRC/LVS results summary]
-
-# ============================================================================
-# STEP 13: GENERATE FINAL DOCUMENTATION
-# ============================================================================
-
-echo "=== Step 13: Generating Documentation ==="
-
-cd /openlane/designs/systolic_mac_array/runs/run1
-
-# Create summary report
-cat > design_summary.txt <<EOF
-=== Systolic MAC Array Design Summary ===
-Design: systolic_top
-Technology: SKY130A
-Run Tag: run1
-Date: $(date)
-
---- Key Metrics ---
-EOF
-
-# Append metrics
-grep "Total cells" reports/synthesis/1-synthesis.stat.rpt.strategy0 >> design_summary.txt
-grep "Chip area" reports/synthesis/1-synthesis.stat.rpt.strategy0 >> design_summary.txt
-grep "worst slack" reports/signoff/sta-rcx_nom/multi_corner_sta.checks.rpt >> design_summary.txt
-
-cat design_summary.txt
-
-# [IMAGE PLACEHOLDER: Final design summary document]
-
-# ============================================================================
-# STEP 14: COPY RESULTS TO HOST SYSTEM
-# ============================================================================
-
-echo "=== Step 14: Exporting Results ==="
-
-# Exit container (Ctrl+D or exit)
-exit
-
-# On host system, results are available at:
-cd $HOME/OpenLane/designs/systolic_mac_array/runs/run1
-
-# Copy important files to a results folder
-mkdir -p $HOME/systolic_array_results
-cp results/final/gds/systolic_top.gds $HOME/systolic_array_results/
-cp results/final/verilog/gl/systolic_top.v $HOME/systolic_array_results/
-cp reports/final_summary_report.csv $HOME/systolic_array_results/
-cp -r logs $HOME/systolic_array_results/
-
-# Create archive
-cd $HOME
-tar -czf systolic_array_results.tar.gz systolic_array_results/
-
-ls -lh systolic_array_results.tar.gz
-
-echo "=== OpenLane Flow Complete! ==="
-echo "Results archived at: $HOME/systolic_array_results.tar.gz"
-
-# [IMAGE PLACEHOLDER: Final exported results directory]
-
-# ============================================================================
-# USEFUL DEBUGGING COMMANDS
-# ============================================================================
-
-# View OpenLane logs in real-time
-tail -f $HOME/OpenLane/designs/systolic_mac_array/runs/run1/logs/openlane.log
-
-# Check for errors
-grep -i "error" $HOME/OpenLane/designs/systolic_mac_array/runs/run1/logs/openlane.log
-
-# Check for warnings
-grep -i "warning" $HOME/OpenLane/designs/systolic_mac_array/runs/run1/logs/openlane.log
-
-# Clean up old runs
-rm -rf $HOME/OpenLane/designs/systolic_mac_array/runs/run1
-
-# Re-run with different parameters
-cd $HOME/OpenLane
-make mount
-./flow.tcl -design systolic_mac_array -tag run2 -overwrite
-
-# [IMAGE PLACEHOLDER: Debug log output]
-
-# ============================================================================
-# END OF SCRIPT
-# ============================================================================
+echo -e "${GREEN}${BOLD}Script finished (or dry-run summary). Log: ${logfile}${RESET}"
