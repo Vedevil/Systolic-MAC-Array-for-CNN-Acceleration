@@ -5,7 +5,8 @@
 </div>
 
 <div align="center">
-![OpenLane](https://img.shields.io/badge/OpenLane-v1.0.0-blue)](https://github.com/The-OpenROAD-Project/OpenLane)
+
+![OpenLane](https://img.shields.io/badge/OpenLane%20-v1.0.0-blue?style=for-the-badge)
 ![VLSI](https://img.shields.io/badge/VLSI-System%20Design-blue?style=for-the-badge)
 ![Technology](https://img.shields.io/badge/Tech-SkyWater%20130nm-green?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
@@ -63,7 +64,7 @@ The Systolic Array operates through synchronized data flow across processing ele
          └─────────────────┘
 ```
 
-![Systolic Array Architecture](./images/systolic_architecture.png)
+![Systolic Array Architecture](./images/systolic_arch.png)
 
 ---
 
@@ -393,7 +394,7 @@ Energy per MAC = 1.37 mW / (16 MACs × 100 MHz)
 
 ### RTL Simulation Waveforms
 
-![Simulation Waveforms](./images/tb_systolic_4x4.png)
+![Simulation Waveforms](./images/systolic_wf.png)
 
 *Functional verification demonstrating correct 4×4 matrix multiplication with systolic dataflow and handshaking protocols.*
 
@@ -476,7 +477,7 @@ Result: ✅ PASS
 <div align="center">
 
 #### SkyWater 130nm Technology
-![130nm Gate-Level Schematic](./images/systolic_schematic.png)
+![130nm Gate-Level Schematic](./images/systolic_sch.png)
 
 *Post-synthesis gate-level schematic for SkyWater 130nm technology showing 16 interconnected MAC PEs*
 
@@ -492,7 +493,7 @@ Result: ✅ PASS
 
 #### 🗺️ 2D Layout View
 
-![130nm Layout 2D](./images/systolic_layout_2d.png)
+![130nm Layout 2D](./images/systolic_lay2d.png)
 
 *SkyWater 130nm — 2D layout view showing complete routed design with regular PE array structure.*
 
@@ -500,17 +501,13 @@ Result: ✅ PASS
 
 #### 🧱 3D Layout View
 
-![130nm Layout 3D](./images/systolic_layout_3d.png)
+![130nm Layout 3D tilted](./images/systolic_lay3d1.png)
+
+
+![130nm Layout 3D top](./images/systolic_lay3d2.png)
 
 *SkyWater 130nm — 3D perspective view illustrating multi-layer metal interconnect for systolic dataflow.*
 
----
-
-#### 📊 Floorplan View
-
-![130nm Floorplan](./images/systolic_floorplan.png)
-
-*Initial floorplan showing PE placement and power grid structure.*
 
 </div>
 
