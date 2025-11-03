@@ -1,0 +1,6 @@
+
+61. Executing CHECK pass (checking for obvious problems).
+Checking module systolic_top...
+Warning: Wire systolic_top.\b_in_ready is used but has no driver.
+Warning: Wire systolic_top.\a_in_ready is used but has no driver.
+Found and reported 2 problems.

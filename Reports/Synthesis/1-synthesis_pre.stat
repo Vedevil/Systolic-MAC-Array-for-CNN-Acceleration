@@ -1,0 +1,22 @@
+
+48. Printing statistics.
+
+=== systolic_top ===
+
+   Number of wires:                290
+   Number of wire bits:            304
+   Number of public wires:          64
+   Number of public wire bits:      78
+   Number of memories:               0
+   Number of memory bits:            0
+   Number of processes:              0
+   Number of cells:                284
+     $_ANDNOT_                     112
+     $_AND_                         15
+     $_DFFE_PN0P_                   56
+     $_MUX_                          2
+     $_NAND_                         6
+     $_NOT_                         28
+     $_ORNOT_                       17
+     $_OR_                          48
+
