@@ -471,7 +471,7 @@ Result: ✅ PASS
 <div align="center">
 
 #### SkyWater 130nm Technology
-![130nm Gate-Level Schematic](images/Systolic_sch.png)
+![130nm Gate-Level Schematic](images/systolic_sch.png)
 
 *Post-synthesis gate-level schematic for SkyWater 130nm technology showing 16 interconnected MAC PEs*
 
