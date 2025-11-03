@@ -327,17 +327,6 @@ Energy per MAC = 1.37 mW / (16 MACs × 100 MHz)
 
 ---
 
-### ⚖️ Comparison with Related Work
-
-<div align="center">
-
-| Design | Technology | Area (μm²) | Power (mW) | Frequency (MHz) | Throughput |
-|:---|:---:|:---:|:---:|:---:|:---|
-| **This Work (4×4 Systolic)** | 130nm | 2810 | 1.37 | 176 | 16 MACs/cycle |
-| 32-bit Kogge-Stone Adder | 90nm | 739 | 0.064 | 162 | 1 add/cycle |
-| 32-bit Kogge-Stone Adder | 180nm | 2285 | 0.217 | 151 | 1 add/cycle |
-
-</div>
 
 **Key Observations:**
 
