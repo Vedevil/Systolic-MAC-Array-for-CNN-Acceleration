@@ -5,7 +5,7 @@
 </div>
 
 <div align="center">
-
+![OpenLane](https://img.shields.io/badge/OpenLane-v1.0.0-blue)](https://github.com/The-OpenROAD-Project/OpenLane)
 ![VLSI](https://img.shields.io/badge/VLSI-System%20Design-blue?style=for-the-badge)
 ![Technology](https://img.shields.io/badge/Tech-SkyWater%20130nm-green?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
