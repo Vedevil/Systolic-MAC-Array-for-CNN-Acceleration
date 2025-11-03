@@ -1,314 +1,259 @@
-#!/usr/bin/env bash
-# ============================================================================
-# openlane_run.sh
-# Nicely formatted RTL -> GDSII OpenLane workflow driver for Systolic MAC Array
-# Usage: ./openlane_run.sh [--design NAME] [--tag TAG] [--force] [--dry-run]
-# Example: ./openlane_run.sh --design systolic_mac_array --tag run1
-# ============================================================================
+# 4×4 Systolic Array Accelerator
 
-set -o errexit
-set -o pipefail
-set -o nounset
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![OpenLane](https://img.shields.io/badge/OpenLane-v1.0.0-blue)](https://github.com/The-OpenROAD-Project/OpenLane)
+[![PDK](https://img.shields.io/badge/PDK-SkyWater%20130nm-orange)](https://github.com/google/skywater-pdk)
 
-# -------------------------
-# CONFIGURABLE VARIABLES
-# -------------------------
-OPENLANE_REPO="${HOME}/OpenLane"
-DESIGNS_DIR="${OPENLANE_REPO}/designs"
-DEFAULT_DESIGN="systolic_mac_array"
-DEFAULT_TAG="run1"
-PDK_REL_PATH="pdks/sky130A" # relative to OpenLane root (used for hints)
-YOSYS_SCRIPT="../synth.ys"   # relative to design/src when running inside container
-LOGDIR="${HOME}/openlane_runs"  # host-side archive of run logs/results
+A fully open-source ASIC implementation of a high-throughput 4×4 systolic array accelerator for matrix multiplication, designed using the SkyWater 130nm PDK and OpenLane flow.
 
-# -------------------------
-# CLI / ARGS
-# -------------------------
-DESIGN="${DEFAULT_DESIGN}"
-TAG="${DEFAULT_TAG}"
-FORCE=false
-DRY_RUN=false
+## 🌟 Project Overview
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --design) DESIGN="$2"; shift 2;;
-    --tag) TAG="$2"; shift 2;;
-    --force) FORCE=true; shift;;
-    --dry-run) DRY_RUN=true; shift;;
-    -h|--help) 
-      cat <<EOF
-Usage: $0 [--design NAME] [--tag TAG] [--force] [--dry-run]
-  --design   Name of design folder under OpenLane/designs (default: ${DEFAULT_DESIGN})
-  --tag      Run tag used by flow.tcl (default: ${DEFAULT_TAG})
-  --force    Re-clone OpenLane if missing / overwrite some checks (use with care)
-  --dry-run  Echo steps but don't execute heavy commands
-EOF
-      exit 0
-      ;;
-    *) echo "Unknown option: $1"; exit 1;;
-  esac
-done
+This project implements a fully pipelined Multiply-Accumulate (MAC) architecture with advanced handshaking protocols, achieving complete timing closure with excellent power efficiency. The design flows from RTL Verilog through synthesis, placement, Clock Tree Synthesis (CTS), and final routing with parasitic extraction.
 
-# -------------------------
-# COLORS (optional)
-# -------------------------
-if [[ -t 1 ]]; then
-  RED="$(printf '\033[1;31m')"
-  GREEN="$(printf '\033[1;32m')"
-  YELLOW="$(printf '\033[1;33m')"
-  BLUE="$(printf '\033[1;34m')"
-  BOLD="$(printf '\033[1;1m')"
-  RESET="$(printf '\033[0m')"
-else
-  RED='' GREEN='' YELLOW='' BLUE='' BOLD='' RESET=''
-fi
+### Key Achievements
 
-# -------------------------
-# HELPERS
-# -------------------------
-logfile="${LOGDIR}/${DESIGN}_${TAG}_$(date +%Y%m%d_%H%M%S).log"
-mkdir -p "$(dirname "${logfile}")"
+- ✅ **Timing Closure**: Worst Setup Slack of **+5.67 ns** (Post-Route RCX)
+- ⚡ **Low Power**: Total power consumption of **1.37 mW** at typical corner
+- 🔧 **Zero Violations**: TNS = 0.00 ns, confirming manufacturability
+- 📐 **Compact Design**: Core area of 2810.20 μm² with 215 standard cells
+- 🌐 **100% Open-Source**: Complete ASIC flow using free tools
 
-step() {
-  local title="$1"
-  echo
-  echo -e "${BOLD}${BLUE}===> ${title}${RESET}"
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] STEP: ${title}" | tee -a "${logfile}"
-}
+## 📋 Table of Contents
 
-run() {
-  # run a command, echo it to stdout & logfile; if dry-run, only echo
-  echo -e "${YELLOW}+ $*${RESET}"
-  echo "+ $*" >> "${logfile}"
-  if ! $DRY_RUN; then
-    eval "$@" 2>&1 | tee -a "${logfile}"
-  fi
-}
+- [Architecture](#architecture)
+- [Design Parameters](#design-parameters)
+- [Getting Started](#getting-started)
+- [Simulation](#simulation)
+- [ASIC Flow](#asic-flow)
+- [Performance Metrics](#performance-metrics)
+- [File Structure](#file-structure)
+- [Future Work](#future-work)
+- [License](#license)
 
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "${cmd}" &>/dev/null; then
-    echo -e "${RED}Error: required command '${cmd}' not found in PATH.${RESET}"
-    echo "Please install it or run this script from a system with ${cmd} available."
-    exit 2
-  fi
-}
+## 🏗️ Architecture
 
-# -------------------------
-# SANITY CHECKS (host)
-# -------------------------
-step "Sanity checks and environment"
-echo "Design: ${DESIGN}, Tag: ${TAG}, Dry-run: ${DRY_RUN}, Force: ${FORCE}"
-echo "Logfile: ${logfile}"
+### Systolic Array Fundamentals
 
-# Check required host tools for local steps (not everything is required inside container)
-for c in git docker; do
-  if ! command -v "${c}" &>/dev/null; then
-    echo -e "${YELLOW}Warning: '${c}' not found. Some steps may fail or require you to run inside container.${RESET}"
-  fi
-done
+The systolic array is a specialized hardware accelerator that maximizes data reuse and parallelism. Data flows synchronously through the array in a "systolic pulse" pattern, minimizing off-chip memory access—the primary bottleneck in large-scale matrix operations.
 
-# -------------------------
-# STEP 1: Clone OpenLane (if needed)
-# -------------------------
-step "Step 1: Install / prepare OpenLane"
+### Processing Element (PE)
 
-if [[ ! -d "${OPENLANE_REPO}" || "${FORCE}" == "true" ]]; then
-  if [[ -d "${OPENLANE_REPO}" && "${FORCE}" == "true" ]]; then
-    echo -e "${YELLOW}Forcing re-clone of OpenLane (removing existing).${RESET}"
-    run "rm -rf \"${OPENLANE_REPO}\""
-  fi
-  run "git clone https://github.com/The-OpenROAD-Project/OpenLane.git \"${OPENLANE_REPO}\""
-  cd "${OPENLANE_REPO}"
-  echo -e "${GREEN}Building OpenLane (this downloads and builds PDKs). This may take a while.${RESET}"
-  run "make"
-  run "make test || echo 'make test returned non-zero; check ${OPENLANE_REPO}/test results.'"
-else
-  echo "OpenLane already exists at ${OPENLANE_REPO}"
-fi
+Each PE performs a single multiply-accumulate operation:
 
-# -------------------------
-# STEP 2: Create design folder structure
-# -------------------------
-step "Step 2: Create design structure under OpenLane/designs"
+```
+acc_reg ← acc_reg + (a_reg × b_reg)
+```
 
-DESIGN_DIR="${DESIGNS_DIR}/${DESIGN}"
-SRC_DIR="${DESIGN_DIR}/src"
-CONSTRAINTS_DIR="${DESIGN_DIR}/constraints"
-RESULTS_DIR="${DESIGN_DIR}/results"
+**Key Features:**
+- Fully pipelined MAC operation
+- AXI-Stream-like valid/ready handshaking
+- Non-blocking data flow with back-pressure support
+- Prevents deadlocks in the array
 
-if [[ ! -d "${DESIGN_DIR}" ]]; then
-  run "mkdir -p \"${SRC_DIR}\" \"${CONSTRAINTS_DIR}\" \"${RESULTS_DIR}\""
-  echo -e "${GREEN}Created design skeleton: ${DESIGN_DIR}${RESET}"
-else
-  echo "Design folder already exists: ${DESIGN_DIR}"
-fi
+### Data Flow
 
-# List expected RTL files to help user confirm
-echo "Expected RTL files (place them into ${SRC_DIR}):"
-echo "  - mac_pe.v"
-echo "  - systolic_top.v"
-echo "  - tb_systolic.v"
-ls -la "${SRC_DIR}" || true
+- **Horizontal (A-stream)**: Data flows left-to-right through rows
+- **Vertical (B-stream)**: Data flows top-to-bottom through columns
+- **Results**: Accumulated in each PE register
 
-# -------------------------
-# STEP 3: Confirm RTL files exist
-# -------------------------
-step "Step 3: Verify RTL files are present"
-missing=()
-for f in mac_pe.v systolic_top.v tb_systolic.v; do
-  if [[ ! -f "${SRC_DIR}/${f}" ]]; then
-    missing+=("${f}")
-  fi
-done
+## ⚙️ Design Parameters
 
-if (( ${#missing[@]} > 0 )); then
-  echo -e "${RED}Missing RTL files in ${SRC_DIR}:${RESET} ${missing[*]}"
-  echo "Please copy your RTL into the src/ folder before continuing."
-  if $DRY_RUN; then
-    echo "Dry-run: continuing anyway."
-  else
-    exit 3
-  fi
-else
-  echo -e "${GREEN}All required RTL files found.${RESET}"
-fi
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **M (Rows)** | 4 | Number of vertical PEs |
+| **N (Columns)** | 4 | Number of horizontal PEs |
+| **DATA_W** | 8 bits | Input data width for matrices A and B |
+| **ACC_W** | 32 bits | Accumulator width (prevents overflow) |
+| **PDK** | SkyWater 130nm | Standard cell library |
+| **Clock Period** | 10 ns | Target frequency: 100 MHz |
 
-# -------------------------
-# STEP 4: Run Yosys synthesis (inside container recommended)
-# -------------------------
-step "Step 4: Run Yosys synthesis (recommended inside OpenLane container)"
+## 🚀 Getting Started
 
-echo "We will launch 'make mount' to open a shell inside the OpenLane container and run synthesis."
-if $DRY_RUN; then
-  echo "Dry-run: would run OpenLane container and then run yosys -s ${YOSYS_SCRIPT} inside ${DESIGN_DIR}/src"
-else
-  run "cd \"${OPENLANE_REPO}\" && make mount"  # opens interactive container shell in interactive use
-  echo -e "${BLUE}Now inside container shell. Run the following inside the container:${RESET}"
-  cat <<EOF
-cd /openlane/designs/${DESIGN}/src
-# Option A: run provided script (if you put synth.ys next to src/)
-yosys -s ${YOSYS_SCRIPT}
+### Prerequisites
 
-# Option B: run interactive Yosys session (if you want to paste your commands)
-yosys
-# then run:
-# read_liberty -lib /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-# read_verilog mac_pe.v
-# read_verilog systolic_top.v
-# hierarchy -top systolic_top
-# synth -top systolic_top
-# dfflibmap -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-# abc -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-# clean
-# write_verilog -noattr synth_netlist.v
-# stat -liberty /openlane/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-EOF
-  echo -e "${YELLOW}After running yosys, ensure synth_netlist.v was generated in ${SRC_DIR}${RESET}"
-fi
+Install the required open-source tools:
 
-# -------------------------
-# STEP 5: Post-synthesis functional simulation (host or container)
-# -------------------------
-step "Step 5: Run post-synthesis functional simulation"
+```bash
+# Icarus Verilog (for simulation)
+sudo apt-get install iverilog
 
-if $DRY_RUN; then
-  echo "Dry-run: would invoke iverilog with synth_netlist.v and PDK verilog models."
-else
-  # Compose PDK verilog locations (inside container these paths differ)
-  PDK_V_PRIM="${OPENLANE_REPO}/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/verilog/primitives.v"
-  PDK_V_ALL="${OPENLANE_REPO}/${PDK_REL_PATH}/libs.ref/sky130_fd_sc_hd/verilog/sky130_fd_sc_hd.v"
+# GTKWave (for waveform viewing)
+sudo apt-get install gtkwave
 
-  # If running inside container, these paths are /openlane/..., user must adapt if needed.
-  if [[ -f "${SRC_DIR}/synth_netlist.v" ]]; then
-    run "iverilog -g2012 -o \"${SRC_DIR}/tb_netlist.vvp\" \
-      \"${SRC_DIR}/tb_systolic.v\" \
-      \"${SRC_DIR}/synth_netlist.v\" \
-      \"${PDK_V_PRIM}\" \
-      \"${PDK_V_ALL}\"" || echo "iverilog compile returned non-zero (check paths and files)."
-    if [[ -f "${SRC_DIR}/tb_netlist.vvp" ]]; then
-      run "vvp \"${SRC_DIR}/tb_netlist.vvp\""
-      echo -e "${GREEN}Post-synthesis simulation completed (check waveform/synth logs).${RESET}"
-    else
-      echo -e "${RED}tb_netlist.vvp not created. Skipping simulation run.${RESET}"
-    fi
-  else
-    echo -e "${RED}synth_netlist.v not found in ${SRC_DIR}. Run synthesis first.${RESET}"
-  fi
-fi
+# OpenLane (for ASIC flow)
+# Follow instructions at: https://openlane.readthedocs.io/
+```
 
-# -------------------------
-# STEP 6: Run full OpenLane flow (RTL->GDSII)
-# -------------------------
-step "Step 6: Run full OpenLane flow (RTL -> GDSII)"
+### Clone Repository
 
-RUN_CMD="./flow.tcl -design ${DESIGN} -tag ${TAG} -overwrite"
-if $DRY_RUN; then
-  echo "Dry-run: would execute: ${RUN_CMD} inside ${OPENLANE_REPO}"
-else
-  echo "Starting OpenLane flow. This runs inside the OpenLane container (make mount)."
-  echo "If you are already inside the container run these commands:"
-  echo "  cd /openlane"
-  echo "  ${RUN_CMD}"
-  echo
-  echo "Or run from host to open a container and start interactive session:"
-  echo "  cd \"${OPENLANE_REPO}\" && make mount"
-  echo
-  echo -e "${YELLOW}Note: OpenLane will write results to ${DESIGN_DIR}/runs/${TAG}/results${RESET}"
-fi
+```bash
+git clone https://github.com/yourusername/systolic-array-accelerator.git
+cd systolic-array-accelerator
+```
 
-# -------------------------
-# STEP 7: Running individual flow stages (examples)
-# -------------------------
-step "Step 7: Running individual flow stages (examples)"
+## 🧪 Simulation
 
-cat <<'EOF'
-# Examples (run inside container /openlane):
-# Synthesis only:
-#   ./flow.tcl -design DESIGN -tag TAG -from synthesis -to synthesis
-# Floorplan only:
-#   ./flow.tcl -design DESIGN -tag TAG -from floorplan -to floorplan
-# Placement only:
-#   ./flow.tcl -design DESIGN -tag TAG -from placement -to placement
-# CTS:
-#   ./flow.tcl -design DESIGN -tag TAG -from cts -to cts
-# Routing:
-#   ./flow.tcl -design DESIGN -tag TAG -from routing -to routing
-EOF
+### Functional Verification
 
-# -------------------------
-# STEP 8: Collect and archive results (host)
-# -------------------------
-step "Step 8: Archive results and extract key artifacts (host)"
+Run the testbench using Icarus Verilog:
 
-if $DRY_RUN; then
-  echo "Dry-run: would copy results from ${DESIGN_DIR}/runs/${TAG}/results to ${HOME}/systolic_array_results and create tarball."
-else
-  SRC_RESULTS="${DESIGN_DIR}/runs/${TAG}/results"
-  if [[ -d "${SRC_RESULTS}" ]]; then
-    DEST="${HOME}/systolic_array_results/${DESIGN}_${TAG}"
-    run "mkdir -p \"${DEST}\""
-    run "cp -v \"${SRC_RESULTS}/final/gds/${DESIGN}.gds\" \"${DEST}/\" || true"
-    run "cp -v \"${SRC_RESULTS}/final/verilog/gl/${DESIGN}.v\" \"${DEST}/\" || true"
-    run "cp -v \"${SRC_RESULTS}/reports/final_summary_report.csv\" \"${DEST}/\" || true"
-    run "cp -rv \"${SRC_RESULTS}/logs\" \"${DEST}/\" || true"
-    run "tar -C \"${HOME}/systolic_array_results\" -czf \"${DEST}.tar.gz\" \"${DESIGN}_${TAG}\" || true"
-    echo -e "${GREEN}Archived results to ${DEST}.tar.gz${RESET}"
-  else
-    echo -e "${YELLOW}Results directory not found: ${SRC_RESULTS}. Run OpenLane flow first.${RESET}"
-  fi
-fi
+```bash
+# 1. Compile RTL and testbench
+iverilog -o tb.out rtl/mac_pe.v rtl/systolic_top.v tb/tb_systolic.v
 
-# -------------------------
-# STEP 9: Helpful reminders & debug commands
-# -------------------------
-step "Step 9: Helpful tips & debug commands"
+# 2. Run simulation and generate VCD
+vvp tb.out
 
-cat <<EOF
-- To view the GDS locally use: klayout /path/to/final/gds/<design>.gds
-- To tail the OpenLane logs: tail -f ${DESIGN_DIR}/runs/${TAG}/logs/openlane.log
-- To check warnings/errors: grep -i "error" ${DESIGN_DIR}/runs/${TAG}/logs/openlane.log
-- To run DRC/LVS use magic/netgen inside the container (see OpenLane docs)
-EOF
+# 3. View waveforms
+gtkwave tb_systolic_4x4.vcd
+```
 
-echo -e "${GREEN}${BOLD}Script finished (or dry-run summary). Log: ${logfile}${RESET}"
+### Testbench Features
+
+- Clock/reset generation (10ns period)
+- Matrix multiplication stimulus
+- Console output verification
+- VCD waveform generation for debugging
+
+## 🔨 ASIC Flow
+
+### OpenLane Synthesis and Place & Route
+
+```bash
+# Navigate to OpenLane directory
+cd openlane
+
+# Run complete flow
+make mount
+./flow.tcl -design systolic_array
+```
+
+### Flow Stages
+
+1. **Synthesis** (Yosys) - RTL to gate-level netlist
+2. **Floorplanning** - Core area and I/O placement
+3. **Placement** (RePlAce) - Standard cell placement
+4. **CTS** (TritonCTS) - Clock tree synthesis
+5. **Routing** (TritonRoute) - Detailed metal routing
+6. **Parasitic Extraction** (RCX) - Final timing analysis
+7. **GDSII Generation** - Mask-ready layout
+
+## 📊 Performance Metrics
+
+### Timing Analysis
+
+| Metric | Post-Synthesis | Post-CTS | Post-Route (Final) |
+|--------|----------------|----------|-------------------|
+| **Worst Setup Slack** | +6.27 ns | +5.83 ns | **+5.67 ns** |
+| **Worst Hold Slack** | +0.18 ns | +0.19 ns | **+0.29 ns** |
+| **Total Negative Slack** | 0.00 ns | 0.00 ns | **0.00 ns** |
+| **Clock Skew (Max)** | 0.03 ns | 0.02 ns | **0.02 ns** |
+
+### Power Consumption (Typical Corner)
+
+| Power Component | Post-Synthesis | Post-CTS | Post-Route (Final) |
+|----------------|----------------|----------|-------------------|
+| **Total Power** | 1.04 mW | 1.07 mW | **1.37 mW** |
+| **Leakage Power** | 1.07 nW | 1.36 nW | **2.01 nW** |
+| **Dynamic Power** | 1.04 mW | 1.07 mW | **1.37 mW** |
+| Internal / Switching | 66.6% / 33.4% | 63.3% / 36.7% | **62.9% / 37.1%** |
+
+### Area Utilization
+
+- **Core Area**: 2810.20 μm²
+- **Total Cells**: 215
+  - Sequential (DFFs): 56
+  - Combinational: 159
+  - Inverters: 19
+  - Buffers: 6
+
+## 📁 File Structure
+
+```
+systolic-array-accelerator/
+├── rtl/
+│   ├── mac_pe.v              # Processing element (MAC unit)
+│   └── systolic_top.v        # Top-level 4×4 array
+├── tb/
+│   └── tb_systolic.v         # Testbench for verification
+├── reports/
+│   ├── synthesis/
+│   │   ├── 1-synthesis.DELAY_1.stat.rpt
+│   │   └── 2-syn_sta.summary.rpt
+│   ├── cts/
+│   │   ├── 13-cts_sta.summary.rpt
+│   │   └── 13-cts_sta.power.rpt
+│   └── rcx/
+│       ├── 31-rcx_sta.summary.rpt
+│       ├── 31-rcx_sta.power.rpt
+│       └── 31-rcx_sta.skew.rpt
+├── layout/
+│   └── systolic_array.gds    # Final GDSII layout
+├── docs/
+│   └── technical_report.md   # Detailed documentation
+└── README.md
+```
+
+## 🔮 Future Work
+
+### Planned Enhancements
+
+1. **LVS/DRC Verification**
+   - Complete Layout vs. Schematic verification
+   - Final Design Rule Check for fabrication readiness
+
+2. **External Interface Integration**
+   - Full AXI-Stream compliance
+   - SoC integration support
+
+3. **Power Optimization**
+   - Clock gating for unused PEs
+   - Dynamic voltage/frequency scaling
+
+4. **Scalability**
+   - Parameterized designs for 8×8 and 16×16 arrays
+   - Study of scaling impacts on timing and power
+
+## 🛠️ Toolchain
+
+| Tool | Stage | Version |
+|------|-------|---------|
+| **Icarus Verilog** | Simulation | v10.3+ |
+| **GTKWave** | Waveform Analysis | Latest |
+| **OpenLane** | Flow Orchestration | v1.0.0 |
+| **Yosys** | Synthesis | 0.9+ |
+| **OpenROAD** | Place & Route | Latest |
+| **OpenSTA** | Timing Analysis | Latest |
+| **Magic/KLayout** | Layout Viewing | Latest |
+
+## 📄 License
+
+This project is released under the MIT License. See [LICENSE](LICENSE) file for details.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request for:
+- Bug fixes
+- Performance improvements
+- Documentation enhancements
+- New features
+
+## 📧 Contact
+
+For questions, issues, or collaborations, please open an issue in this repository.
+
+---
+
+**Note**: This design is intended for educational and research purposes. For production use, additional verification and testing are recommended.
+
+## 🙏 Acknowledgments
+
+- SkyWater PDK team for the open-source 130nm PDK
+- OpenLane community for the comprehensive ASIC flow
+- All contributors to open-source EDA tools
+
+## 📚 References
+
+- [SkyWater PDK Documentation](https://skywater-pdk.readthedocs.io/)
+- [OpenLane Documentation](https://openlane.readthedocs.io/)
+- [Systolic Arrays Paper](https://www.eecs.harvard.edu/~htk/publication/1982-kung-why-systolic-architecture.pdf)
