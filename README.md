@@ -64,7 +64,6 @@ The Systolic Array operates through synchronized data flow across processing ele
          └─────────────────┘
 ```
 
-![Systolic Array Architecture](./images/systolic_arch.png)
 
 ---
 
@@ -73,6 +72,7 @@ The Systolic Array operates through synchronized data flow across processing ele
 The **Systolic Array** is a parallel computing architecture where data flows synchronously through a network of processing elements (PEs), inspired by biological systolic rhythms like heartbeats. It's widely used in modern AI accelerators, including Google's TPU and other matrix multiplication engines.
 
 ### ⚙️ Working Principle
+![Systolic Array Architecture](./images/systolic_arch.png)
 
 1. **Processing Element (PE) Core Operation**
    - Each PE performs a multiply-accumulate (MAC) operation:
@@ -385,6 +385,11 @@ Energy per MAC = 1.37 mW / (16 MACs × 100 MHz)
 
 ![Simulation Waveforms](./images/systolic_wf.png)
 
+#### Console
+![Simulation Waveforms](./images/systolic_console1.png)
+![Simulation Waveforms](./images/systolic_console2.png)
+
+
 *Functional verification demonstrating correct 4×4 matrix multiplication with systolic dataflow and handshaking protocols.*
 
 ---
@@ -466,13 +471,22 @@ Result: ✅ PASS
 <div align="center">
 
 #### SkyWater 130nm Technology
-![130nm Gate-Level Schematic](./images/systolic_sch.png)
+![130nm Gate-Level Schematic](images/Systolic_sch.png)
 
 *Post-synthesis gate-level schematic for SkyWater 130nm technology showing 16 interconnected MAC PEs*
 
 </div>
 
 ---
+
+### Gate-Level Simulation Waveforms
+
+![Simulation Waveforms](./images/systolic_wf_gls.png)
+
+#### Console
+![Simulation Waveforms](./images/systolic_console1.png)
+![Simulation Waveforms](./images/systolic_console2.png)
+
 
 ## 🧱 Physical Layout
 
